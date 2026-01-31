@@ -9,10 +9,72 @@ char pass[] = SECRET_PASS;        // your network password (use for WPA, or use 
 int keyIndex = 0;                 // your network key index number (needed only for WEP)"
 
 int status = WL_IDLE_STATUS;
-WiFiClient client;
+
+char serverAddress[] = SECRET_SERVER_IP;  // server address
+int port = SECRET_SERVER_PORT;
+WiFiClient wifi;
+HttpClient client = HttpClient(wifi, serverAddress, port);
+char reqPath[] = "/transmission/rpc";
+String sessionId = "";
 
 
 LiquidCrystal lcd(8, 9, 4, 5, 6, 7);
+
+bool getSessionId() {
+  String emptyBody = "{}";
+  
+  client.beginRequest();
+  client.post("/transmission/rpc");
+  client.sendHeader("Content-Type", "application/json");
+  client.sendHeader("Content-Length", String(emptyBody.length()));
+  client.beginBody();
+  client.print(emptyBody);
+  client.endRequest();
+  
+  int httpCode = client.responseStatusCode();
+  Serial.print("HTTP Code: ");
+  Serial.println(httpCode);
+  
+  if (httpCode == 409) {
+    // Read response headers manually
+    sessionId = readHeader("X-Transmission-Session-Id");
+    Serial.print("Session ID: ");
+    Serial.println(sessionId);
+    return true;
+  }
+  
+  return false;
+}
+
+// Function to read a specific header from response
+String readHeader(String headerName) {
+  String headerValue = "";
+  
+  // Read response line by line
+  while (client.available()) {
+    String line = client.readStringUntil('\n');
+    line.trim();
+    
+    // Check if this line contains our header
+    if (line.startsWith(headerName + ":")) {
+      headerValue = line.substring(line.indexOf(':') + 1);
+      headerValue.trim();
+      break;
+    }
+    
+    // Empty line means end of headers
+    if (line.length() == 0) {
+      break;
+    }
+  }
+
+  // Clear any remaining response body (important!)
+  while (client.available()) {
+    client.read();
+  }
+  
+  return headerValue;
+}
 
 void connectToWifiWithStop() {
   // check for the WiFi module:
@@ -57,12 +119,47 @@ void setup() {
     Serial.println("not connected to somebody");
   }
 
-  byte ip[] = {192,168,1,81};
-  if (client.connect(ip, 9091)) { // connect to transmission
-    lcd.print("y");
-  } else {
-    lcd.print("x");
+  if (getSessionId()) {
+    Serial.println("Session ID obtained successfully");
   }
+
+  
+  JSONVar request;
+  request["jsonrpc"] = "2.0";
+  request["method"] = "torrent_get";
+  request["id"] = 1;
+  
+  // Create params object
+  JSONVar params;
+  JSONVar fields;
+  fields[0] = "rate_download";
+  fields[1] = "rate_upload";
+  fields[2] = "name";
+  params["fields"] = fields;
+  params["ids"] = "recently_active";
+  request["params"] = params;  // Empty params object
+  
+  String body = JSON.stringify(request);
+  Serial.println(body);
+  
+  // Send request - CORRECT ORDER:
+  client.beginRequest();                     // Start request
+  client.post(reqPath);                      // POST method with path
+  client.sendHeader("Content-Type", "application/json");  // Header
+  client.sendHeader("Content-Length", String(body.length()));     // Content length
+  client.sendHeader("X-Transmission-Session-Id", sessionId); // CSRF token
+  client.beginBody();                        // Start body section
+  client.print(body);                        // Send body
+  client.endRequest();                       // End request
+  
+  // Get response
+  int httpCode = client.responseStatusCode();
+  String response = client.responseBody();
+  
+  Serial.print("HTTP Code: ");
+  Serial.println(httpCode);
+  Serial.print("Response: ");
+  Serial.println(response);
   
 }
 
