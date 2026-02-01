@@ -17,6 +17,11 @@ HttpClient client = HttpClient(wifi, serverAddress, port);
 char reqPath[] = "/transmission/rpc";
 String sessionId = "";
 
+struct Responce {
+  JSONVar var;
+  int response;
+};
+
 
 LiquidCrystal lcd(8, 9, 4, 5, 6, 7);
 
@@ -101,28 +106,7 @@ void connectToWifiWithStop() {
   }
 }
 
-void setup() {
-  delay(2000);
-  Serial.begin(9600);
-  Serial.println("Started");  // Debugging
-  lcd.begin(16, 2); // Set up display
-  lcd.print("Connecting");
-
-  connectToWifiWithStop();
-
-  // you're connected now, so print out the status
-  printWiFiStatus();
-
-  if (client.connected()) {
-    Serial.println("connected to somebody");
-  } else {
-    Serial.println("not connected to somebody");
-  }
-
-  if (getSessionId()) {
-    Serial.println("Session ID obtained successfully");
-  }
-
+Responce getActiveTorrents() {
   
   JSONVar request;
   request["jsonrpc"] = "2.0";
@@ -155,16 +139,184 @@ void setup() {
   // Get response
   int httpCode = client.responseStatusCode();
   String response = client.responseBody();
-  
-  Serial.print("HTTP Code: ");
-  Serial.println(httpCode);
-  Serial.print("Response: ");
   Serial.println(response);
+
+  // Parse JSON response
+  JSONVar jsonResponse = JSON.parse(response);
+  Serial.print("format inside: ");
+  Serial.println(jsonResponse["result"]["torrents"]);
+  
+  // Create Responce object properly
+  Responce resp;
+  resp.response = httpCode;
+  
+  if (httpCode == 200 && JSON.typeof(jsonResponse) != "undefined") {
+    // Check if we have the expected structure
+    if (JSON.typeof(jsonResponse["result"]) != "undefined" &&
+        JSON.typeof(jsonResponse["result"]["torrents"]) != "undefined") {
+      resp.var = JSONVar(jsonResponse["result"]["torrents"]);
+    } else {
+      Serial.println("No torrents or wrong structure");
+      resp.var = JSONVar();  // Empty JSONVar
+    }
+  } else {
+    Serial.println("Error or invalid response");
+    resp.var = JSONVar();  // Empty JSONVar
+  }
+  
+  return resp;
+}
+
+void setup() {
+  delay(2000);
+  Serial.begin(9600);
+  Serial.println("Started");  // Debugging
+  lcd.begin(16, 2); // Set up display
+  lcd.print("Connecting");
+
+  connectToWifiWithStop();
+
+  // you're connected now, so print out the status
+  printWiFiStatus();
+
+  
   
 }
 
-void loop() {
+JSONVar customMax(JSONVar a, JSONVar b) {
+  // Convert to double first, then to long long
+  double ard_double = (double)a["rate_download"];
+  double brd_double = (double)b["rate_download"];
+  long long ard = (long long)ard_double;
+  long long brd = (long long)brd_double;
+  
+  if (ard > 0 || brd > 0) {
+    return ard > brd ? a : b;
+  } else {
+    double aru_double = (double)a["rate_upload"];
+    double bru_double = (double)b["rate_upload"];
+    long long aru = (long long)aru_double;
+    long long bru = (long long)bru_double;
+    return aru > bru ? a : b;
+  }
+}
 
+// Function to format B/s to human readable
+String formatBps(long long bps) {
+  const char* units[] = {"B/s", "KB/s", "MB/s", "GB/s"};
+  
+  if (bps == 0) return "0 B/s";
+  
+  // Handle negative values
+  bool isNegative = bps < 0;
+  if (isNegative) bps = -bps;
+  
+  int unitIndex = 0;
+  double value = (double)bps;
+  
+  // Use 1024 for storage/network bytes
+  while (value >= 1024.0 && unitIndex < 3) {
+    value /= 1024.0;
+    unitIndex++;
+  }
+  
+  String result = "";
+  if (isNegative) result += "-";
+  
+  // Smart formatting based on value size
+  if (value < 10.0) {
+    result += String(value, 2);
+  } else if (value < 100.0) {
+    result += String(value, 1);
+  } else {
+    result += String(value, 0);
+  }
+  
+  result += units[unitIndex];
+  return result;
+}
+
+void formatResult(JSONVar m, String down, String up) {
+  Serial.print("formated: ");
+  Serial.println(m);
+  int spaces = 16 - 2 -  down.length() - up.length();
+  String dis1 = "d";
+  dis1.concat(down);
+  for (int i = 0; i < spaces; i++) {
+    dis1.concat(" ");
+  }
+  dis1.concat("u" + up);
+
+
+   // If m["rate_download"] contains a JSONVar, cast it properly
+  double downloadValue = (double)m["rate_download"];
+  double uploadValue = (double)m["rate_upload"];
+  long long downloadLL = (long long)downloadValue;
+  long long uploadLL = (long long)uploadValue;
+  String downt = formatBps(downloadLL);
+  String upt = formatBps(uploadLL);
+
+  int spLen = (double) m["rate_download"] > 0 ? downt.length() : upt.length();
+  spLen += 2;
+  String dis2 = ((String) m["name"]).substring(0, 16 - spLen);
+  dis2.concat("|");
+  dis2.concat((double) m["rate_download"] > 0 ? "d" : "u");
+ 
+  
+  dis2.concat(downloadLL > 0 ? downt : upt);
+
+  lcd.setCursor(0,0);
+  lcd.print(dis1);
+  Serial.print("dis2: ");
+  Serial.println(dis2);
+  lcd.setCursor(0,1);
+  lcd.print("               "); //16 spaces
+  lcd.setCursor(0,1);
+  lcd.print(dis2);
+}
+
+void showResultOnDisplay(JSONVar var) {
+  long long sum_down = 0;
+  long long sum_up = 0;
+  Serial.print("j: ");
+  Serial.println(var);
+  JSONVar varMax = var[0];
+  
+  for(size_t i = 0; i < var.length(); i++) {
+    Serial.print("i: ");
+    Serial.println(var[i]);
+    // Convert JSONVar to long long before adding
+    long long download = (long long)(double)var[i]["rate_download"];
+    long long upload = (long long)(double)var[i]["rate_upload"];
+    
+    sum_down += download;
+    sum_up += upload;
+    
+    varMax = customMax(var[i], varMax);
+  }
+  
+  String textDown = formatBps(sum_down);
+  String textUp = formatBps(sum_up);
+  formatResult(varMax, textDown, textUp);
+  
+  // Use textDown and textUp as needed...
+}
+
+void loop() {
+  Responce resp = getActiveTorrents();
+  Serial.print("q: ");
+  Serial.println(resp.var);
+  switch (resp.response) {
+    case 409:
+      if(!getSessionId()) {
+        Serial.println("Cannot obtain session");
+      }
+      break;
+    case 200:
+      showResultOnDisplay(resp.var);
+      break;
+  }
+  delay(5000); // 5 sec
 }
 
 void printWiFiStatus() {
@@ -179,10 +331,6 @@ void printWiFiStatus() {
   // print your WiFi shield's IP address:
   IPAddress ip = WiFi.localIP();
   Serial.print("IP Address: ");
-  Serial.println(ip);
-
-  // print where to go in a browser:
-  Serial.print("To see this page in action, open a browser to http://");
   Serial.println(ip);
 
 }
